@@ -9,19 +9,32 @@ Everything else is just efficiency.
 import os       # os.path.exists
 import math     # math.log, math.exp
 import random   # random.seed, random.choices, random.gauss, random.shuffle
+import json     # json.loads, json.dumps
 random.seed(42) # Let there be order among chaos
 
-# Let there be a Dataset `docs`: list[str] of documents (e.g. a list of names)
+# Let there be a Dataset `docs`: list[str] of documents (short stories from TinyStories)
 if not os.path.exists('input.txt'):
     import urllib.request
-    names_url = 'https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt'
-    urllib.request.urlretrieve(names_url, 'input.txt')
-docs = [line.strip() for line in open('input.txt') if line.strip()]
+    print("Downloading TinyStories dataset from HuggingFace...")
+    stories = []
+    base_url = 'https://datasets-server.huggingface.co/rows?dataset=karpathy/tinystories-gpt4-clean&config=default&split=train'
+    for offset in range(20000, 21000, 100): # rows 20000+ are the train split (0..19999 are test/val)
+        url = f'{base_url}&offset={offset}&limit=100'
+        with urllib.request.urlopen(url) as response:
+            data = json.loads(response.read())
+        for item in data['rows']:
+            stories.append(item['row']['text'])
+        print(f"  fetched {len(stories)} stories...", end='\r')
+    print()
+    with open('input.txt', 'w') as f:
+        for story in stories:
+            f.write(json.dumps(story) + '\n')
+docs = [json.loads(line) for line in open('input.txt') if line.strip()]
 random.shuffle(docs)
 print(f"num docs: {len(docs)}")
 
 # Let there be a Tokenizer to translate strings to sequences of integers ("tokens") and back
-uchars = sorted(set(''.join(docs))) # unique characters in the dataset become token ids 0..n-1
+uchars = sorted('\n !"$\',-.' + '0123456789:;?' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' + 'abcdefghijklmnopqrstuvwxyz') # all 74 chars in the dataset (from README)
 BOS = len(uchars) # token id for a special Beginning of Sequence (BOS) token
 vocab_size = len(uchars) + 1 # total number of unique tokens, +1 is for BOS
 print(f"vocab size: {vocab_size}")
@@ -74,7 +87,7 @@ class Value:
 # Initialize the parameters, to store the knowledge of the model
 n_layer = 1     # depth of the transformer neural network (number of layers)
 n_embd = 16     # width of the network (embedding dimension)
-block_size = 16 # maximum context length of the attention window (note: the longest name is 15 characters)
+block_size = 16 # maximum context length of the attention window (stories are much longer; increase for better quality at cost of speed)
 n_head = 4      # number of attention heads
 head_dim = n_embd // n_head # derived dimension of each head
 matrix = lambda nout, nin, std=0.08: [[Value(random.gauss(0, std)) for _ in range(nin)] for _ in range(nout)]
@@ -185,7 +198,7 @@ for step in range(num_steps):
 
 # Inference: may the model babble back to us
 temperature = 0.5 # in (0, 1], control the "creativity" of generated text, low to high
-print("\n--- inference (new, hallucinated names) ---")
+print("\n--- inference (new, hallucinated stories) ---")
 for sample_idx in range(20):
     keys, values = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
     token_id = BOS
