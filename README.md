@@ -28,6 +28,16 @@ Key differences from `microgpt.py`:
 
 > **Runtime:** Go to **Runtime → Change runtime type → T4 GPU** before running.
 
+### Model configuration
+
+| Hyperparameter | Value |
+|---|---|
+| `n_layer` | 4 |
+| `n_embd` | 64 |
+| `block_size` | 64 |
+| `n_head` | 4 |
+| Total parameters | ~214K |
+
 ### Estimated runtime (Colab T4 GPU)
 
 | Section | Estimate |
@@ -35,13 +45,13 @@ Key differences from `microgpt.py`:
 | Setup & imports | < 5 s |
 | Dataset download (10 API calls × 100 rows) | ~20–30 s (first run only) |
 | Tokenizer + model init | < 1 s |
-| **Training** (1000 steps × up to 16 tokens each, tiny 16-dim model) | **~1–3 min on T4** |
-| Inference (20 samples × ≤16 tokens) | < 5 s |
+| **Training** (5000 steps × up to 64 tokens each, 64-dim model) | **~10–20 min on T4** |
+| Inference (5 samples × ≤200 tokens) | < 10 s |
 
-**Total: ~2–4 minutes on a Colab T4 GPU.**
+**Total: ~10–20 minutes on a Colab T4 GPU.**
 
-- The model is extremely small (n_embd=16, n_layer=1), so GPU kernel launch overhead will dominate over compute.
-- Training uses a Python `for` loop over tokens (no batching), which is the main bottleneck — on CPU this could stretch to 10–20 min.
+- Training uses a Python `for` loop over tokens (no batching), which is the main bottleneck.
+- Inference generates up to 200 tokens per sample, producing longer story snippets.
 - After the first run, `input.txt` is cached so the download step is skipped.
 
 ## How it works
@@ -51,5 +61,5 @@ Key differences from `microgpt.py`:
 3. **Autograd** — A minimal scalar `Value` class that tracks a computation graph for backpropagation
 4. **Model parameters** — Initialise GPT weights: token/position embeddings, attention projections, MLP weights
 5. **Forward pass** — For each token: embed → RMSNorm → multi-head attention → MLP → logits
-6. **Training** — 1000 steps of forward pass, cross-entropy loss, backprop, and Adam weight updates
-7. **Inference** — Sample 20 names character-by-character using temperature-scaled softmax
+6. **Training** — 5000 steps of forward pass, cross-entropy loss, backprop, and Adam weight updates with linear LR decay
+7. **Inference** — Sample 5 story snippets of up to 200 tokens using temperature-scaled softmax
