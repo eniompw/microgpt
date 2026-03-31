@@ -177,9 +177,10 @@ all_tokens = torch.tensor(all_tokens, dtype=torch.long, device=device)
 print(f"Total tokens: {len(all_tokens):,}")
 
 # ── Optimizer: AdamW ─────────────────────────────────────────────────────────
-num_steps     = 2000
+num_steps     = 3500
 warmup_steps  = 200
 learning_rate = 1e-3
+min_lr        = 1e-4   # 10% of peak — prevents wasted steps at tail
 
 optimizer = torch.optim.AdamW(params, lr=learning_rate, betas=(0.9, 0.95), eps=1e-10)
 
@@ -196,7 +197,7 @@ for step in range(num_steps + 1):
         lr_t = learning_rate * step / warmup_steps
     else:
         progress = (step - warmup_steps) / (num_steps - warmup_steps)
-        lr_t = learning_rate * 0.5 * (1 + math.cos(math.pi * progress))
+        lr_t = min_lr + (learning_rate - min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
     for g in optimizer.param_groups:
         g['lr'] = lr_t
 
