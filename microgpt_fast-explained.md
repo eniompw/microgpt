@@ -8,21 +8,77 @@ A detailed breakdown of every design decision in `microgpt_fast.ipynb` / `microg
 
 ## Optimization journey
 
-Most of the iteration was just trying to get loss low enough that the output reads as coherent English. The architecture and speed optimisations came first, but the bulk of commits were tweaking the training recipe and model size to push loss down.
+The project started as a direct PyTorch port of the pure-Python `microgpt.py` — token-by-token training on a tiny model. Most of the iteration from there was trying to get loss low enough that the output reads as coherent English, first by overhauling the architecture, then by tuning the training recipe and model size.
 
-| Round | Key change | Loss | Output quality |
-|---|---|---|---|
-| 1 | Baseline (5 layers, 128-dim, ReLU, linear LR) | 0.99 | Gibberish — "shoogther", "drabbit" |
-| 2 | Free training fixes (SiLU, cosine LR, grad clipping, 3000 steps) | 0.81 | Words mostly real, grammar broken |
-| 3 | Bigger model (256-dim, 6 layers, batch 64) | 0.77 | Coherent sentences, some nonsense words |
-| 4 | min_lr floor, 3500 steps, temperature 0.7 | 0.60 | Reads as simple children's stories |
+### Phase 1: PyTorch port (token-by-token)
 
-**Key takeaways:**
+The initial Colab notebook was a straight conversion of `microgpt.py` to PyTorch — same token-by-token training loop, same tiny model.
 
-- Round 2 was free — same model, same compute, just better training tricks. Loss dropped 0.99 → 0.81.
-- Round 3 was the breakthrough — the model had hit a capacity ceiling at 0.81. No amount of training tricks could push past it. Doubling width (128 → 256) broke through immediately.
-- Round 4 was squeezing the tail — the cosine schedule was decaying LR to zero, wasting the last third of training. Adding a min_lr floor gave those steps back.
-- Temperature at inference (0.8 → 0.7) was the cheapest improvement of all — zero retraining, just pick higher-confidence tokens.
+| Commit | Config | What changed |
+|---|---|---|
+| `9857ea2` | 1 layer, 16-dim, block=16, lr=0.01, 1000 steps | Initial port — ReLU, learned positions, separate lm_head |
+| `3843e16` | 2 layers, 32-dim, block=32 | Tried scaling up |
+| `5d09563` | 2 layers, 16-dim, block=16 | Scaled back down — too slow token-by-token |
+
+Output: mostly gibberish. The token-by-token loop was the bottleneck — couldn't scale the model up without training taking forever.
+
+### Phase 2: Architecture overhaul
+
+Rewrote the model based on [EN10/modded-llama2.c](https://github.com/EN10/modded-llama2.c). This was the biggest single change — went from token-by-token to batched training with a modern transformer architecture.
+
+| Commit | Config | What changed |
+|---|---|---|
+| `0e0e40e` | 5 layers, 128-dim, block=256, batch=32, 1000 steps | Batched forward, RoPE, flash attention, RMSNorm, weight tying, mixed precision, grad clipping, ReLU² |
+
+New features in one commit: batched `(B, T)` training, `scaled_dot_product_attention`, RoPE, RMSNorm, weight tying, `GradScaler`, `clip_grad_norm_`. File renamed from `microgpt-colab.ipynb` → `microgpt-gpu-colab.ipynb` → `microgpt_fast.ipynb`.
+
+### Phase 3: Training recipe tuning
+
+With the architecture in place, iterated on training hyperparameters to push loss down.
+
+| Commit | Config | What changed |
+|---|---|---|
+| `07f6b92` | steps 1000→3000, lr=5e-4 | More training steps |
+| `73857d7` | batch 32→128, steps 3000→5000 | Bigger batches, more steps |
+| `b88c021` | steps 5000→2000, added `torch.compile` | `torch.compile` made each step ~2× faster, so fewer steps needed |
+
+### Phase 4: Training recipe improvements (free gains)
+
+Changed only the training recipe — no model size change. Same compute, better loss.
+
+| Commit | Config | What changed |
+|---|---|---|
+| `3937510` | ReLU→SiLU, linear LR→cosine+warmup, lr 5e-4→1e-3, steps→3000 | SiLU activation, cosine LR schedule, warmup, gradient clipping, higher learning rate |
+
+Loss: ~0.99 → ~0.81. Words mostly real but grammar still broken.
+
+### Phase 5: Model size increase (the breakthrough)
+
+Loss plateaued at ~0.81 — a capacity ceiling. No training tricks could push past it.
+
+| Commit | Config | What changed |
+|---|---|---|
+| `664b307` | n_embd 128→256, n_layer 5→6, batch 128→64, steps 3000→2000 | ~4× parameters per layer. Halved batch to fit GPU memory |
+
+Loss: ~0.81 → ~0.77. Coherent sentences appeared, some nonsense words remained.
+
+### Phase 6: Final tuning
+
+Squeezed remaining quality from the training schedule.
+
+| Commit | Config | What changed |
+|---|---|---|
+| `dede655` | steps 2000→3500, min_lr=1e-4, temperature 0.8→0.7 | min_lr floor prevents wasted steps at tail, more steps, lower sampling temperature |
+
+Loss: ~0.77 → ~0.60. Output reads as simple children's stories.
+
+### Key takeaways
+
+- **Phase 2 (architecture overhaul) was the foundation** — batched training unlocked everything else.
+- **Phase 4 (training recipe) was free** — same model, same compute, loss dropped 0.99 → 0.81.
+- **Phase 5 (model size) was the breakthrough** — capacity ceiling at 0.81 could only be broken by a bigger model. Width (128→256) mattered more than depth.
+- **Phase 6 (min_lr + more steps) was the final squeeze** — the cosine schedule was decaying LR to zero, wasting the last third of training.
+- **Temperature at inference** (0.8→0.7) was the cheapest improvement — zero retraining, just pick higher-confidence tokens.
 
 ---
 
