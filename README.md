@@ -61,7 +61,7 @@ python microgpt_fast.py
 | Dataset | Names (~32k names, GitHub) | TinyStories (5000 stories, HuggingFace) |
 | Vocabulary | Dynamic (from dataset) | Fixed 74-char ASCII |
 | Output | Hallucinated names | Hallucinated story snippets |
-| Training time | ~5–15 min (CPU) | ~2–5 min (T4 GPU) |
+| Training time | ~5–15 min (CPU) | ~3 min (T4 GPU) |
 
 ### Model configuration
 

@@ -2,6 +2,28 @@
 
 A detailed breakdown of every design decision in `microgpt_fast.ipynb` / `microgpt_fast.py`, why it was chosen, and how much it helps.
 
+**Training time: ~3 min on a T4 GPU** (3500 steps, 4M tokens, ~5M parameters).
+
+---
+
+## Optimization journey
+
+Most of the iteration was just trying to get loss low enough that the output reads as coherent English. The architecture and speed optimisations came first, but the bulk of commits were tweaking the training recipe and model size to push loss down.
+
+| Round | Key change | Loss | Output quality |
+|---|---|---|---|
+| 1 | Baseline (5 layers, 128-dim, ReLU, linear LR) | 0.99 | Gibberish — "shoogther", "drabbit" |
+| 2 | Free training fixes (SiLU, cosine LR, grad clipping, 3000 steps) | 0.81 | Words mostly real, grammar broken |
+| 3 | Bigger model (256-dim, 6 layers, batch 64) | 0.77 | Coherent sentences, some nonsense words |
+| 4 | min_lr floor, 3500 steps, temperature 0.7 | 0.60 | Reads as simple children's stories |
+
+**Key takeaways:**
+
+- Round 2 was free — same model, same compute, just better training tricks. Loss dropped 0.99 → 0.81.
+- Round 3 was the breakthrough — the model had hit a capacity ceiling at 0.81. No amount of training tricks could push past it. Doubling width (128 → 256) broke through immediately.
+- Round 4 was squeezing the tail — the cosine schedule was decaying LR to zero, wasting the last third of training. Adding a min_lr floor gave those steps back.
+- Temperature at inference (0.8 → 0.7) was the cheapest improvement of all — zero retraining, just pick higher-confidence tokens.
+
 ---
 
 ## Architecture
