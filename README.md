@@ -4,7 +4,7 @@ A minimal GPT trained from scratch — in a single Python file with no dependenc
 
 Based on [microgpt.py](https://gist.githubusercontent.com/karpathy/8627fe009c40f57531cb18360106ce95/raw/14fb038816c7aae0bb9342c2dbf1a51dd134a5ff/microgpt.py) by Andrej Karpathy.
 
-The updated `microgpt-gpu-colab.ipynb` and `gpt_gpu.py` took significant inspiration from [`model.py`](https://github.com/EN10/modded-llama2.c/blob/main/model.py) and [`train.py`](https://github.com/EN10/modded-llama2.c/blob/main/train.py) from [EN10/modded-llama2.c](https://github.com/EN10/modded-llama2.c).
+The updated `microgpt-gpu-colab.ipynb` and `microgpt_fast.py` took significant inspiration from [`model.py`](https://github.com/EN10/modded-llama2.c/blob/main/model.py) and [`train.py`](https://github.com/EN10/modded-llama2.c/blob/main/train.py) from [EN10/modded-llama2.c](https://github.com/EN10/modded-llama2.c).
 
 ---
 
@@ -60,7 +60,7 @@ python microgpt.py
 
 ### Architecture and training changes (inspired by [EN10/modded-llama2.c](https://github.com/EN10/modded-llama2.c))
 
-The updated notebook and `gpt_gpu.py` adopt a Llama-style design in place of the original minimal GPT:
+The updated notebook and `microgpt_fast.py` adopt a Llama-style design in place of the original minimal GPT:
 
 Relative improvements below are informed by the [modded-nanogpt speedrun](https://github.com/KellerJordan/modded-nanogpt), where each technique was measured in isolation on 8×H100 GPUs.
 
