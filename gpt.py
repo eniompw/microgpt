@@ -1,7 +1,6 @@
 import os
 import random
 import json
-import math
 import time
 import urllib.request
 
@@ -62,30 +61,21 @@ n_embd     = 128     # embedding dim
 block_size = 256     # context window
 n_head     = 8       # attention heads
 head_dim   = n_embd // n_head
-batch_size = 32
-grad_accum_steps = 4
-
-# Pad vocab to multiple of 128 for GPU efficiency
-padded_vocab = math.ceil(vocab_size / 128) * 128
-
-# MLP hidden dim (4x, rounded to multiple of 32)
-multiple_of = 32
-hidden_dim = multiple_of * ((4 * n_embd + multiple_of - 1) // multiple_of)
+batch_size = 128     # sequences per gradient step
 
 # ── Weight Initialization ─────────────────────────────────────────────────────
 matrix = lambda nout, nin: torch.randn(nout, nin, device=device) * 0.02
-zeros  = lambda nout, nin: torch.zeros(nout, nin, device=device)
 
 state_dict = {
-    'wte': matrix(padded_vocab, n_embd),   # token embeddings (weight-tied to lm_head)
+    'wte': matrix(vocab_size, n_embd),   # token embeddings (weight-tied to lm_head)
 }
 for i in range(n_layer):
     state_dict[f'layer{i}.attn_wq'] = matrix(n_embd, n_embd)
     state_dict[f'layer{i}.attn_wk'] = matrix(n_embd, n_embd)
     state_dict[f'layer{i}.attn_wv'] = matrix(n_embd, n_embd)
-    state_dict[f'layer{i}.attn_wo'] = zeros(n_embd, n_embd)     # zero-init for stability
-    state_dict[f'layer{i}.mlp_fc1'] = matrix(hidden_dim, n_embd)
-    state_dict[f'layer{i}.mlp_fc2'] = zeros(n_embd, hidden_dim)  # zero-init for stability
+    state_dict[f'layer{i}.attn_wo'] = matrix(n_embd, n_embd)
+    state_dict[f'layer{i}.mlp_fc1'] = matrix(4 * n_embd, n_embd)
+    state_dict[f'layer{i}.mlp_fc2'] = matrix(n_embd, 4 * n_embd)
 
 params = list(state_dict.values())
 for p in params:
@@ -93,8 +83,7 @@ for p in params:
 
 total_params = sum(p.numel() for p in params)
 print(f"num params: {total_params:,}")
-print(f"vocab (original/padded): {vocab_size}/{padded_vocab}")
-print(f"tokens per iter: {batch_size * block_size * grad_accum_steps:,}")
+print(f"tokens per iter: {batch_size * block_size:,}")
 
 # ── Model Architecture ────────────────────────────────────────────────────────
 def rmsnorm(x):
@@ -127,6 +116,16 @@ def gpt_train(tokens):
         q = F.linear(x, state_dict[f'layer{li}.attn_wq']).view(bsz, seqlen, n_head, head_dim)
         k = F.linear(x, state_dict[f'layer{li}.attn_wk']).view(bsz, seqlen, n_head, head_dim)
         v = F.linear(x, state_dict[f'layer{li}.attn_wv']).view(bsz, seqlen, n_head, head_dim)
+        q, k = apply_rope(q, cos, sin), applyvocab_size)"""
+    bsz, seqlen = tokens.shape
+    x = rmsnorm(F.embedding(tokens, state_dict['wte']))
+    cos, sin = rope_cos[:seqlen], rope_sin[:seqlen]
+    for li in range(n_layer):
+        r = x
+        x = rmsnorm(x)
+        q = F.linear(x, state_dict[f'layer{li}.attn_wq']).view(bsz, seqlen, n_head, head_dim)
+        k = F.linear(x, state_dict[f'layer{li}.attn_wk']).view(bsz, seqlen, n_head, head_dim)
+        v = F.linear(x, state_dict[f'layer{li}.attn_wv']).view(bsz, seqlen, n_head, head_dim)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         x = F.scaled_dot_product_attention(
             q.transpose(1,2), k.transpose(1,2), v.transpose(1,2), is_causal=True
@@ -134,19 +133,11 @@ def gpt_train(tokens):
         x = F.linear(x, state_dict[f'layer{li}.attn_wo']) + r
         r = x
         x = rmsnorm(x)
-        x = F.relu(F.linear(x, state_dict[f'layer{li}.mlp_fc1'])).square()   # relu²
+        x = F.relu(F.linear(x, state_dict[f'layer{li}.mlp_fc1']))
         x = F.linear(x, state_dict[f'layer{li}.mlp_fc2']) + r
     return F.linear(rmsnorm(x), state_dict['wte'])   # weight-tied lm_head
 
-def gpt(token_id, pos_id, keys, values):
-    """Single-token forward for inference with KV cache."""
-    x = rmsnorm(state_dict['wte'][token_id])
-    cos, sin = rope_cos[pos_id], rope_sin[pos_id]
-    for li in range(n_layer):
-        r = x
-        x = rmsnorm(x)
-        q = F.linear(x, state_dict[f'layer{li}.attn_wq']).view(n_head, head_dim)
-        k = F.linear(x, state_dict[f'layer{li}.attn_wk']).view(n_head, head_dim)
+gpt_train = torch.compile(gpt_train)  # fuse GPU kernels for ~2x speedupd_dim)
         v = F.linear(x, state_dict[f'layer{li}.attn_wv']).view(n_head, head_dim)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         keys[li].append(k); values[li].append(v)
@@ -178,29 +169,12 @@ stable_steps  = int(num_steps * (1 - cooldown_frac))
 
 embed_params  = [state_dict['wte']]
 matrix_params = [p for n, p in state_dict.items() if n != 'wte']
-optimizer = torch.optim.AdamW([
-    {'params': embed_params,  'lr': base_lr, 'weight_decay': 0.0},
-    {'params': matrix_params, 'lr': base_lr, 'weight_decay': 0.1},
-], betas=(0.9, 0.95), eps=1e-10)
-for g in optimizer.param_groups:
-    g['initial_lr'] = g['lr']
+optimizer = torc2000
+learning_rate = 5e-4
 
-def lr_mult(step):
-    if step < stable_steps:
-        return 1.0
-    if step >= num_steps:
-        return min_lr / base_lr
-    r = (step - stable_steps) / (num_steps - stable_steps)
-    return (min_lr/base_lr) + 0.5*(1+math.cos(math.pi*r))*(1-min_lr/base_lr)
+optimizer = torch.optim.AdamW(params, lr=learning_rate, betas=(0.9, 0.95), eps=1e-10)
 
-scaler = torch.amp.GradScaler('cuda')
-
-loss_history = []
-t0 = time.time()
-
-for step in range(num_steps + 1):
-    for g in optimizer.param_groups:
-        g['lr'] = g['initial_lr'] * lr_mult(step)
+# Mixed precision (float16 on T4)        g['lr'] = g['initial_lr'] * lr_mult(step)
 
     if step % 100 == 0:
         with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
@@ -224,34 +198,32 @@ for step in range(num_steps + 1):
 
     scaler.unscale_(optimizer)
     torch.nn.utils.clip_grad_norm_(params, 1.0)
+    # Linear learning rate decay
+    lr_t = learning_rate * (1 - step / num_steps)
+    for g in optimizer.param_groups:
+        g['lr'] = lr_t
+
+    if step % 100 == 0:
+        with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
+            ix = torch.randint(0, len(all_tokens) - block_size - 1, (batch_size,))
+            xb = torch.stack([all_tokens[i:i+block_size] for i in ix])
+            yb = torch.stack([all_tokens[i+1:i+block_size+1] for i in ix])
+            el = F.cross_entropy(gpt_train(xb).view(-1, vocab_size), yb.view(-1)).item()
+        print(f"step {step:4d}/{num_steps} | loss {el:.4f} | lr {lr_t:.2e} | {time.time()-t0:.1f}s")
+
+    if step >= num_steps:
+        break
+
+    optimizer.zero_grad()
+    ix = torch.randint(0, len(all_tokens) - block_size - 1, (batch_size,))
+    xb = torch.stack([all_tokens[i:i+block_size] for i in ix])
+    yb = torch.stack([all_tokens[i+1:i+block_size+1] for i in ix])
+    with torch.amp.autocast('cuda', dtype=torch.float16):
+        loss = F.cross_entropy(gpt_train(xb).view(-1, vocab_size), yb.view(-1))
+    scaler.scale(loss).backward()
     scaler.step(optimizer)
     scaler.update()
-    loss_history.append(loss.item() * grad_accum_steps)
-
-print(f"\nDone in {time.time()-t0:.1f}s")
-plt.figure(figsize=(8, 3))
-plt.plot(loss_history)
-plt.xlabel('Step'); plt.ylabel('Loss'); plt.title('Training Loss')
-plt.tight_layout(); plt.show()
-
-# ── Inference and Text Generation ────────────────────────────────────────────
-temperature = 0.8   # (0, 1] — lower = more focused, higher = more random
-num_samples = 5
-max_new_tokens = 200
-
-print("--- inference (hallucinated stories) ---\n")
-for sample_idx in range(num_samples):
-    keys   = [[] for _ in range(n_layer)]
-    values = [[] for _ in range(n_layer)]
-    token_id = BOS
-    sample = []
-    with torch.no_grad():
-        for pos_id in range(max_new_tokens):
-            pos = min(pos_id, block_size - 1)
-            logits = gpt(token_id, pos, keys, values)
-            probs  = F.softmax(logits[:vocab_size] / temperature, dim=-1)
-            token_id = torch.multinomial(probs, 1).item()
-            if token_id == BOS:
+    loss_history.append(loss.item()
                 break
             sample.append(uchars[token_id])
     print(f"sample {sample_idx+1}:\n{''.join(sample)}\n")
