@@ -44,6 +44,17 @@ Rewrote the model based on [EN10/modded-llama2.c](https://github.com/EN10/modded
 
 New features in one commit: batched `(B, T)` training, `scaled_dot_product_attention`, RoPE, RMSNorm, weight tying, `GradScaler`, `clip_grad_norm_`. File renamed from `microgpt-colab.ipynb` → `microgpt-gpu-colab.ipynb` → `microgpt_fast.ipynb`.
 
+Output at `0e0e40e`: loss dropped smoothly from 4.95 → 1.05, and inference produced much longer, more coherent samples (though still with some nonsense words and grammar):
+
+```
+step  100/1000 | loss 2.42
+step  500/1000 | loss 1.32
+step 1000/1000 | loss 1.05
+
+sample 1: Once upon a time, there was ... The bird was not stink tight it was to shout. The
+sample 2: One day, a little dog named Ben. Tim was every say and made a big time box. ...
+```
+
 ### Phase 3: Training recipe tuning
 
 With the architecture in place, iterated on training hyperparameters to push loss down.
