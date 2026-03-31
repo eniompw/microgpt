@@ -84,7 +84,8 @@ class Block(nn.Module):
         self.ffwd = FeedForward()
 
     def forward(self, x):
-        x = x + self.ffwd(F.rms_norm(x + self.sa_heads(F.rms_norm(x, (n_embd,))), (n_embd,))) # Residual connections
+        x = x + self.sa_heads(F.rms_norm(x, (n_embd,)))
+        x = x + self.ffwd(F.rms_norm(x, (n_embd,)))
         return x
 
 class GPT(nn.Module):

@@ -4,7 +4,7 @@ A minimal GPT trained from scratch — in a single Python file with no dependenc
 
 Based on [microgpt.py](https://gist.githubusercontent.com/karpathy/8627fe009c40f57531cb18360106ce95/raw/14fb038816c7aae0bb9342c2dbf1a51dd134a5ff/microgpt.py) by Andrej Karpathy.
 
-The updated `microgpt-gpu-colab.ipynb` and `microgpt_fast.py` took significant inspiration from [`model.py`](https://github.com/EN10/modded-llama2.c/blob/main/model.py) and [`train.py`](https://github.com/EN10/modded-llama2.c/blob/main/train.py) from [EN10/modded-llama2.c](https://github.com/EN10/modded-llama2.c).
+The updated `microgpt_fast.ipynb` and `microgpt_fast.py` took significant inspiration from [`model.py`](https://github.com/EN10/modded-llama2.c/blob/main/model.py) and [`train.py`](https://github.com/EN10/modded-llama2.c/blob/main/train.py) from [EN10/modded-llama2.c](https://github.com/EN10/modded-llama2.c).
 
 ---
 
@@ -30,15 +30,39 @@ python microgpt.py
 
 ---
 
-## `microgpt-gpu-colab.ipynb` — PyTorch + Colab T4 GPU
+## `microgpt_torch.py` — PyTorch port of `microgpt.py`
 
-[microgpt-gpu-colab.ipynb](microgpt-gpu-colab.ipynb) is a PyTorch version of the same model, designed to run on a free Colab T4 GPU and trained on short story snippets instead of names.
+A direct PyTorch translation of `microgpt.py`. Same dataset (names), same hyperparameters, same single-sequence training loop — but replaces the hand-rolled autograd `Value` class with PyTorch tensors and `nn.Module`.
+
+Useful for understanding the exact mapping from the pure-Python code to idiomatic PyTorch.
+
+```bash
+python microgpt_torch.py
+```
+
+---
+
+## `microgpt_fast.py` — Semi-optimised PyTorch (GPU)
+
+A standalone Python script with the same architecture and training changes as the Colab notebook (see table below), but runnable outside of Colab. Trains on the TinyStories dataset with batched processing, mixed precision, RoPE, flash attention, weight tying, and `torch.compile`.
+
+```bash
+python microgpt_fast.py
+```
+
+> Requires a CUDA GPU. Falls back to CPU but will be significantly slower.
+
+---
+
+## `microgpt_fast.ipynb` — PyTorch + Colab T4 GPU
+
+[microgpt_fast.ipynb](microgpt_fast.ipynb) is a PyTorch version of the same model, designed to run on a free Colab T4 GPU and trained on short story snippets instead of names.
 
 > **Before running:** go to **Runtime → Change runtime type → T4 GPU**.
 
 ### Differences from `microgpt.py`
 
-| | `microgpt.py` | `microgpt-gpu-colab.ipynb` |
+| | `microgpt.py` | `microgpt_fast.ipynb` |
 |---|---|---|
 | Backend | Pure Python | PyTorch |
 | Hardware | CPU | T4 GPU (Colab) |
