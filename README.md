@@ -18,15 +18,7 @@ python microgpt.py
 
 `input.txt` is downloaded automatically from [karpathy/makemore](https://github.com/karpathy/makemore) on first run. After 1000 training steps the model generates 20 hallucinated names.
 
-### How it works
-
-1. **Dataset** — Character-level names loaded from `input.txt`
-2. **Tokenizer** — Vocabulary built dynamically from the dataset, plus a special BOS token
-3. **Autograd** — A minimal scalar `Value` class that builds a computation graph for backpropagation
-4. **Model** — GPT weights: token/position embeddings, multi-head attention projections, MLP layers
-5. **Forward pass** — For each token: embed → RMSNorm → multi-head attention → MLP → logits
-6. **Training** — Cross-entropy loss, backprop through the scalar graph, Adam updates with linear LR decay
-7. **Inference** — Greedy or sampled decoding to generate new names
+See [microgpt-explained.md](microgpt-explained.md) for a detailed walkthrough of every component — autograd, attention, training loop, and inference.
 
 ---
 
