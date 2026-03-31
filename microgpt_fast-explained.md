@@ -20,7 +20,19 @@ The initial Colab notebook was a straight conversion of `microgpt.py` to PyTorch
 | `3843e16` | 2 layers, 32-dim, block=32 | Tried scaling up |
 | `5d09563` | 2 layers, 16-dim, block=16 | Scaled back down — too slow token-by-token |
 
-Output: mostly gibberish. The token-by-token loop was the bottleneck — couldn't scale the model up without training taking forever.
+Output at `9857ea2`: loss was erratic (ranging from 0.03 to 4.0 — classic overfitting on a tiny model) and inference produced only ~4 tokens per sample:
+
+```
+step  200 / 1000 | loss 0.0332
+step  600 / 1000 | loss 0.3019
+step  800 / 1000 | loss 1.0971
+step 1000 / 1000 | loss 0.2125
+
+sample  1: Once upon a time
+sample  8: Lily like a as a
+```
+
+The token-by-token loop was the bottleneck — couldn't scale the model up without training taking forever.
 
 ### Phase 2: Architecture overhaul
 
