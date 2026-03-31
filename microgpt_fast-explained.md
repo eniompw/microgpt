@@ -20,7 +20,7 @@ The initial Colab notebook was a straight conversion of `microgpt.py` to PyTorch
 | `3843e16` | 2 layers, 32-dim, block=32 | Tried scaling up |
 | `5d09563` | 2 layers, 16-dim, block=16 | Scaled back down — too slow token-by-token |
 
-Output at `9857ea2`: loss was erratic (ranging from 0.03 to 4.0 — classic overfitting on a tiny model) and inference produced only ~4 tokens per sample:
+Output at `9857ea2`: loss was erratic (ranging from 0.03 to 4.0 — classic overfitting on a tiny model) and inference produced only ~16 characters per sample:
 
 ```
 step  200 / 1000 | loss 0.0332
