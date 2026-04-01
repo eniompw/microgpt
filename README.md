@@ -1,10 +1,18 @@
 # microgpt
 
-A minimal GPT trained from scratch — in a single Python file with no dependencies, or as a PyTorch Colab notebook with GPU support.
+A minimal GPT trained from scratch — designed to teach LLM development from first principles. Start with a pure-Python implementation, then progress to PyTorch, then to GPU-optimised training on a free Colab T4.
 
-Based on [microgpt.py](https://gist.githubusercontent.com/karpathy/8627fe009c40f57531cb18360106ce95/raw/14fb038816c7aae0bb9342c2dbf1a51dd134a5ff/microgpt.py) by Andrej Karpathy.
+Based on [microgpt.py](https://gist.githubusercontent.com/karpathy/8627fe009c40f57531cb18360106ce95/raw/14fb038816c7aae0bb9342c2dbf1a51dd134a5ff/microgpt.py) by Andrej Karpathy, with GPU training inspired by [EN10/modded-llama2.c](https://github.com/EN10/modded-llama2.c).
 
-The updated `microgpt_fast.ipynb` and `microgpt_fast.py` took significant inspiration from [`model.py`](https://github.com/EN10/modded-llama2.c/blob/main/model.py) and [`train.py`](https://github.com/EN10/modded-llama2.c/blob/main/train.py) from [EN10/modded-llama2.c](https://github.com/EN10/modded-llama2.c).
+---
+
+## Learning path
+
+| Step | File | What you learn |
+|---|---|---|
+| 1 | `microgpt.py` | How a GPT works from scratch — autograd, attention, training loop, inference — with zero dependencies |
+| 2 | `microgpt_torch.py` | How the same model maps to PyTorch (`nn.Module`, tensors, autograd) |
+| 3 | `microgpt_fast.ipynb` / `.py` | How to make it actually work — batched training, GPU acceleration, modern transformer techniques |
 
 ---
 
@@ -22,7 +30,7 @@ See [microgpt-explained.md](microgpt-explained.md) for a detailed walkthrough of
 
 ---
 
-## `microgpt_torch.py` — PyTorch port of `microgpt.py`
+## `microgpt_torch.py` — PyTorch port
 
 A direct PyTorch translation of `microgpt.py`. Same dataset (names), same hyperparameters, same single-sequence training loop — but replaces the hand-rolled autograd `Value` class with PyTorch tensors and `nn.Module`.
 
@@ -34,27 +42,27 @@ python microgpt_torch.py
 
 ---
 
-## `microgpt_fast.py` — Semi-optimised PyTorch (GPU)
+## `microgpt_fast` — GPU-optimised PyTorch
 
-A standalone Python script with the same architecture and training changes as the Colab notebook (see table below), but runnable outside of Colab. Trains on the TinyStories dataset with batched processing, mixed precision, RoPE, flash attention, weight tying, and `torch.compile`.
+Available as a Colab notebook (`microgpt_fast.ipynb`) or standalone script (`microgpt_fast.py`) — same model and training code in both.
 
+Trains a Llama-style transformer on the [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories) dataset (~5000 short stories) using batched processing, mixed precision, flash attention, RoPE, weight tying, and `torch.compile`. Generates hallucinated children's stories.
+
+### Running
+
+**Colab notebook** (recommended — free GPU):
+1. Open [microgpt_fast.ipynb](microgpt_fast.ipynb) in Google Colab
+2. Go to **Runtime → Change runtime type → T4 GPU**
+3. Run all cells
+
+**Local script** (requires a CUDA GPU):
 ```bash
 python microgpt_fast.py
 ```
 
-> Requires a CUDA GPU. Falls back to CPU but will be significantly slower.
-
----
-
-## `microgpt_fast.ipynb` — PyTorch + Colab T4 GPU
-
-[microgpt_fast.ipynb](microgpt_fast.ipynb) is a PyTorch version of the same model, designed to run on a free Colab T4 GPU and trained on short story snippets instead of names.
-
-> **Before running:** go to **Runtime → Change runtime type → T4 GPU**.
-
 ### Differences from `microgpt.py`
 
-| | `microgpt.py` | `microgpt_fast.ipynb` |
+| | `microgpt.py` | `microgpt_fast` |
 |---|---|---|
 | Backend | Pure Python | PyTorch |
 | Hardware | CPU | T4 GPU (Colab) |
@@ -78,4 +86,4 @@ python microgpt_fast.py
 
 Uses a Llama-style transformer with RMSNorm, RoPE, flash attention, SiLU, weight tying, and KV-cached inference. Training uses mixed precision, `torch.compile`, cosine LR with warmup and min_lr floor, gradient clipping, and AdamW.
 
-See [microgpt_fast-explained.md](microgpt_fast-explained.md) for a detailed breakdown of every design choice, why it was made, benchmarks, and a hyperparameter tuning guide.
+See [microgpt_fast-explained.md](microgpt_fast-explained.md) for a detailed breakdown of every design choice, the optimization journey from broken output to coherent stories, a hyperparameter tuning guide, and a glossary of all technical terms.
