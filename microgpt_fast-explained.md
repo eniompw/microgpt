@@ -163,7 +163,7 @@ attn = F.softmax(torch.einsum('hd,shd->sh', q, K) / head_dim**0.5, dim=0)
 x = F.linear(torch.einsum('sh,shd->hd', attn, V).reshape(-1), attn_wo) + r
 ```
 
-**Result:** Inference time for 5 samples of 200 tokens dropped from **39.7s → 7.1s** (~5.6× faster), or **~40ms/token → ~7ms/token** (~25 → ~140 tokens/s). Per-token speed is more meaningful here than total time, since sample length varies. The Python loop was the bottleneck — eliminating it lets the GPU handle all heads in a single kernel call.
+**Result:** Inference time for 5 × 200 token samples dropped from **39.7s → 7.1s** (~25 → ~140 tokens/s). The Python loop was the bottleneck — eliminating it lets the GPU handle all heads in a single kernel call.
 
 ### Key takeaways
 
