@@ -75,19 +75,18 @@ batch_size = 64      # sequences per gradient step
 # ── Weight init ──────────────────────────────────────────────────────────────
 matrix = lambda nout, nin: torch.randn(nout, nin, device=device) * 0.02
 
-wte = matrix(vocab_size, n_embd)
-layers = []
-for _ in range(n_layer):
-    layers.append({
-        'attn_wq': matrix(n_embd, n_embd),
-        'attn_wk': matrix(n_embd, n_embd),
-        'attn_wv': matrix(n_embd, n_embd),
-        'attn_wo': matrix(n_embd, n_embd),
-        'mlp_fc1': matrix(4 * n_embd, n_embd),
-        'mlp_fc2': matrix(n_embd, 4 * n_embd),
-    })
+state_dict = {
+    'wte': matrix(vocab_size, n_embd),   # token embeddings (weight-tied to lm_head)
+}
+for i in range(n_layer):
+    state_dict[f'layer{i}.attn_wq'] = matrix(n_embd, n_embd)
+    state_dict[f'layer{i}.attn_wk'] = matrix(n_embd, n_embd)
+    state_dict[f'layer{i}.attn_wv'] = matrix(n_embd, n_embd)
+    state_dict[f'layer{i}.attn_wo'] = matrix(n_embd, n_embd)
+    state_dict[f'layer{i}.mlp_fc1'] = matrix(4 * n_embd, n_embd)
+    state_dict[f'layer{i}.mlp_fc2'] = matrix(n_embd, 4 * n_embd)
 
-params = [wte] + [p for layer in layers for p in layer.values()]
+params = list(state_dict.values())
 for p in params:
     p.requires_grad_(True)
 
@@ -119,38 +118,38 @@ def apply_rope(x, cos, sin):
 def gpt_train(tokens):
     """tokens: (B, T) long -> logits: (B, T, vocab_size)"""
     bsz, seqlen = tokens.shape
-    x = rmsnorm(F.embedding(tokens, wte))
+    x = rmsnorm(F.embedding(tokens, state_dict['wte']))
     cos, sin = rope_cos[:seqlen], rope_sin[:seqlen]
-    for layer in layers:
+    for li in range(n_layer):
         r = x
         x = rmsnorm(x)
-        q = F.linear(x, layer['attn_wq']).view(bsz, seqlen, n_head, head_dim)
-        k = F.linear(x, layer['attn_wk']).view(bsz, seqlen, n_head, head_dim)
-        v = F.linear(x, layer['attn_wv']).view(bsz, seqlen, n_head, head_dim)
+        q = F.linear(x, state_dict[f'layer{li}.attn_wq']).view(bsz, seqlen, n_head, head_dim)
+        k = F.linear(x, state_dict[f'layer{li}.attn_wk']).view(bsz, seqlen, n_head, head_dim)
+        v = F.linear(x, state_dict[f'layer{li}.attn_wv']).view(bsz, seqlen, n_head, head_dim)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         x = F.scaled_dot_product_attention(
             q.transpose(1,2), k.transpose(1,2), v.transpose(1,2), is_causal=True
         ).transpose(1,2).contiguous().view(bsz, seqlen, -1)
-        x = F.linear(x, layer['attn_wo']) + r
+        x = F.linear(x, state_dict[f'layer{li}.attn_wo']) + r
         r = x
         x = rmsnorm(x)
-        x = F.silu(F.linear(x, layer['mlp_fc1']))
-        x = F.linear(x, layer['mlp_fc2']) + r
-    return F.linear(rmsnorm(x), wte)   # weight-tied lm_head
+        x = F.silu(F.linear(x, state_dict[f'layer{li}.mlp_fc1']))
+        x = F.linear(x, state_dict[f'layer{li}.mlp_fc2']) + r
+    return F.linear(rmsnorm(x), state_dict['wte'])   # weight-tied lm_head
 
 gpt_train = torch.compile(gpt_train)  # fuse GPU kernels for ~2x speedup
 print(f"torch.compile cache: {os.getenv('TORCHINDUCTOR_CACHE_DIR', '~/.cache/torch/inductor')}")
 
 # ── Single-token forward (for inference with KV cache) ───────────────────────
 def gpt(token_id, pos_id, keys, values):
-    x = rmsnorm(wte[token_id])
+    x = rmsnorm(state_dict['wte'][token_id])
     cos, sin = rope_cos[pos_id], rope_sin[pos_id]
-    for li, layer in enumerate(layers):
+    for li in range(n_layer):
         r = x
         x = rmsnorm(x)
-        q = F.linear(x, layer['attn_wq']).view(n_head, head_dim)
-        k = F.linear(x, layer['attn_wk']).view(n_head, head_dim)
-        v = F.linear(x, layer['attn_wv']).view(n_head, head_dim)
+        q = F.linear(x, state_dict[f'layer{li}.attn_wq']).view(n_head, head_dim)
+        k = F.linear(x, state_dict[f'layer{li}.attn_wk']).view(n_head, head_dim)
+        v = F.linear(x, state_dict[f'layer{li}.attn_wv']).view(n_head, head_dim)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         keys[li].append(k)
         values[li].append(v)
@@ -159,12 +158,12 @@ def gpt(token_id, pos_id, keys, values):
             k_h = torch.stack([ki[h] for ki in keys[li]])
             v_h = torch.stack([vi[h] for vi in values[li]])
             x_attn.append(F.softmax(k_h @ q[h] / head_dim**0.5, dim=0) @ v_h)
-        x = F.linear(torch.cat(x_attn), layer['attn_wo']) + r
+        x = F.linear(torch.cat(x_attn), state_dict[f'layer{li}.attn_wo']) + r
         r = x
         x = rmsnorm(x)
-        x = F.silu(F.linear(x, layer['mlp_fc1']))
-        x = F.linear(x, layer['mlp_fc2']) + r
-    return F.linear(rmsnorm(x), wte)
+        x = F.silu(F.linear(x, state_dict[f'layer{li}.mlp_fc1']))
+        x = F.linear(x, state_dict[f'layer{li}.mlp_fc2']) + r
+    return F.linear(rmsnorm(x), state_dict['wte'])
 
 print("Model functions defined.")
 
