@@ -137,6 +137,7 @@ def gpt_train(tokens):
     return F.linear(rmsnorm(x), state_dict['wte'])   # weight-tied lm_head
 
 gpt_train = torch.compile(gpt_train)  # fuse GPU kernels for ~2x speedup
+print(f"torch.compile cache: {os.getenv('TORCHINDUCTOR_CACHE_DIR', '~/.cache/torch/inductor')}")
 
 # ── Single-token forward (for inference with KV cache) ───────────────────────
 def gpt(token_id, pos_id, keys, values):
@@ -237,6 +238,7 @@ num_samples = 5
 max_new_tokens = 200  # generate up to this many tokens per sample
 
 print("--- inference (hallucinated stories) ---\n")
+t0 = time.time()
 for sample_idx in range(num_samples):
     keys   = [[] for _ in range(n_layer)]
     values = [[] for _ in range(n_layer)]
@@ -252,3 +254,4 @@ for sample_idx in range(num_samples):
                 break
             sample.append(uchars[token_id])
     print(f"sample {sample_idx+1}:\n{''.join(sample)}\n")
+print(f"Done in {time.time()-t0:.1f}s")
