@@ -8,6 +8,7 @@ A detailed breakdown of every design decision in `microgpt_fast.ipynb` / `microg
 
 ## Contents
 
+- [microgpt.py vs microgpt_fast.py](#microgptpy-vs-microgpt_fastpy) — side-by-side comparison of every significant change
 - [Optimization journey](#optimization-journey) — how the model went from broken output to coherent stories, phase by phase
   - [Phase 1: PyTorch port](#phase-1-pytorch-port-token-by-token)
   - [Phase 2: Architecture overhaul](#phase-2-architecture-overhaul)
@@ -22,6 +23,30 @@ A detailed breakdown of every design decision in `microgpt_fast.ipynb` / `microg
 - [Tuning hyperparameters](#tuning-hyperparameters) — how to diagnose and fix common problems
 - [Relative improvements](#relative-improvements-modded-nanogpt-benchmarks) — benchmarks from modded-nanogpt
 - [Glossary](#glossary) — plain-English definitions of all technical terms
+
+---
+
+## microgpt.py vs microgpt_fast.py
+
+A side-by-side comparison of every significant change and why it was made.
+
+| Aspect | `microgpt.py` | `microgpt_fast.py` | Why |
+|---|---|---|---|
+| **Compute** | Pure Python scalars, custom `Value` autograd | PyTorch tensors + CUDA | GPU parallelism |
+| **Dataset** | `names.txt` (~32K names, ~5 chars each) | TinyStories (5000 stories, ~500 chars each) | Tests real language modelling — grammar, narrative, vocabulary |
+| **Batching** | 1 document per step | 64 sequences × 256 tokens = 16,384 tokens per step | Utilises GPU memory bandwidth |
+| **Compilation** | None | `torch.compile` | Kernel fusion, ~2× speedup |
+| **Precision** | float64 (Python default) | float16 + GradScaler | Halves memory; faster matmuls on T4 |
+| **Position encoding** | Learned `wpe` matrix | RoPE (Rotary) | No extra parameters; better length generalisation |
+| **Attention** | Manual nested loops | `scaled_dot_product_attention` (Flash Attention) | Fused CUDA kernel; O(T) memory instead of O(T²) |
+| **Activation** | ReLU | SiLU | Smoother gradients; standard in all Llama-family models |
+| **Weight tying** | Separate `lm_head` matrix | `wte` reused as `lm_head` | Fewer parameters; stronger gradient signal |
+| **Optimizer** | Manual Adam | PyTorch `AdamW` | Decoupled weight decay; less code |
+| **LR schedule** | Linear decay to zero | Cosine with warmup + min_lr floor | Better convergence; min_lr prevents wasted steps at tail |
+| **Gradient clipping** | None | `clip_grad_norm_(1.0)` | Prevents loss spikes |
+| **KV cache** | Keys/values accumulate in lists | Same | Identical inference pattern |
+
+The core **algorithm** is unchanged — `state_dict`, `for li in range(n_layer)`, attention + MLP blocks, causal masking, cross-entropy loss. Everything else is engineering to make it run ~1000× faster on a GPU.
 
 ---
 
