@@ -151,13 +151,13 @@ def gpt(token_id, pos_id, keys, values):
         k = F.linear(x, state_dict[f'layer{li}.attn_wk']).view(n_head, head_dim)
         v = F.linear(x, state_dict[f'layer{li}.attn_wv']).view(n_head, head_dim)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
-        keys[li].append(k); values[li].append(v)
-        x_attn = []
-        for h in range(n_head):
-            k_h = torch.stack([ki[h] for ki in keys[li]])
-            v_h = torch.stack([vi[h] for vi in values[li]])
-            x_attn.append(F.softmax(k_h @ q[h] / head_dim**0.5, dim=0) @ v_h)
-        x = F.linear(torch.cat(x_attn), state_dict[f'layer{li}.attn_wo']) + r
+        keys[li].append(k)
+        values[li].append(v)
+        K = torch.stack(keys[li])    # (S, H, D)
+        V = torch.stack(values[li])  # (S, H, D)
+        attn = F.softmax(torch.einsum('hd,shd->sh', q, K) / head_dim**0.5, dim=0)
+        x = F.linear(torch.einsum('sh,shd->hd', attn, V).reshape(-1),
+                      state_dict[f'layer{li}.attn_wo']) + r
         r = x
         x = rmsnorm(x)
         x = F.silu(F.linear(x, state_dict[f'layer{li}.mlp_fc1']))
@@ -178,10 +178,10 @@ all_tokens = torch.tensor(all_tokens, dtype=torch.long, device=device)
 print(f"Total tokens: {len(all_tokens):,}")
 
 def get_batch():
-    starts = torch.randint(0, len(all_tokens) - block_size - 1, (batch_size,))
-    xb = torch.stack([all_tokens[i : i + block_size] for i in starts])
-    yb = torch.stack([all_tokens[i + 1 : i + block_size + 1] for i in starts])
-    return xb, yb
+    starts = torch.randint(0, len(all_tokens) - block_size - 1, (batch_size,), device=device)
+    idx = starts.unsqueeze(1) + torch.arange(block_size + 1, device=device)
+    tokens = all_tokens[idx]
+    return tokens[:, :-1], tokens[:, 1:]
 
 # ── Optimizer: AdamW ─────────────────────────────────────────────────────────
 num_steps     = 3500
@@ -195,7 +195,8 @@ def get_lr(step):
     progress = (step - warmup_steps) / (num_steps - warmup_steps)
     return min_lr + (learning_rate - min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
 
-optimizer = torch.optim.AdamW(params, lr=learning_rate, betas=(0.9, 0.95), eps=1e-10)
+optimizer = torch.optim.AdamW(params, lr=learning_rate, betas=(0.9, 0.95), eps=1e-10,
+                              fused=(device.type == 'cuda'))
 
 # Mixed precision (float16 on T4)
 scaler = torch.amp.GradScaler('cuda')
@@ -212,7 +213,7 @@ for step in range(num_steps + 1):
     if step % 100 == 0:
         xb, yb = get_batch()
         with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
-            el = F.cross_entropy(gpt_train(xb).view(-1, vocab_size), yb.view(-1)).item()
+            el = F.cross_entropy(gpt_train(xb).reshape(-1, vocab_size), yb.reshape(-1)).item()
         print(f"step {step:4d}/{num_steps} | loss {el:.4f} | lr {lr_t:.2e} | {time.time()-t0:.1f}s")
 
     if step >= num_steps:
@@ -221,7 +222,7 @@ for step in range(num_steps + 1):
     optimizer.zero_grad(set_to_none=True)
     xb, yb = get_batch()
     with torch.amp.autocast('cuda', dtype=torch.float16):
-        loss = F.cross_entropy(gpt_train(xb).view(-1, vocab_size), yb.view(-1))
+        loss = F.cross_entropy(gpt_train(xb).reshape(-1, vocab_size), yb.reshape(-1))
     scaler.scale(loss).backward()
     scaler.unscale_(optimizer)
     torch.nn.utils.clip_grad_norm_(params, 1.0)

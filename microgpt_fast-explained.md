@@ -206,6 +206,17 @@ Replaces ReLU in the MLP. SiLU (also called Swish) has smoother gradients around
 
 During generation, previously computed key/value tensors are cached per layer so each new token only requires a single forward pass instead of reprocessing the entire sequence. This makes generation O(T) instead of O(T²).
 
+Attention over the cached K/V is computed across all heads simultaneously using `einsum`, replacing a Python `for h in range(n_head)` loop:
+
+```python
+K = torch.stack(keys[li])    # (S, H, D)
+V = torch.stack(values[li])  # (S, H, D)
+attn = F.softmax(torch.einsum('hd,shd->sh', q, K) / head_dim**0.5, dim=0)
+x = F.linear(torch.einsum('sh,shd->hd', attn, V).reshape(-1), attn_wo)
+```
+
+This significantly speeds up inference — the per-head Python loop was the bottleneck during generation.
+
 ---
 
 ## Training
@@ -254,6 +265,16 @@ else:
 - **Cosine decay**: smoothly reduces LR, spending more time at moderate learning rates than linear decay.
 - **min_lr floor** (1e-4 = 10% of peak): prevents the tail of training from being wasted at near-zero LR. Without this, the last ~30% of steps contribute almost nothing.
 
+### Vectorized batch sampling
+
+```python
+starts = torch.randint(0, len(all_tokens) - block_size - 1, (batch_size,), device=device)
+idx = starts.unsqueeze(1) + torch.arange(block_size + 1, device=device)
+tokens = all_tokens[idx]
+```
+
+Builds the entire batch with a single GPU index gather. Replaces a Python `for` loop + `torch.stack` that moved data the CPU per sample.
+
 ### Gradient clipping
 
 ```python
@@ -265,8 +286,11 @@ Caps the global gradient norm at 1.0. Prevents occasional large batches from cau
 ### AdamW
 
 ```python
-optimizer = torch.optim.AdamW(params, lr=1e-3, betas=(0.9, 0.95), eps=1e-10)
+optimizer = torch.optim.AdamW(params, lr=1e-3, betas=(0.9, 0.95), eps=1e-10,
+                              fused=(device.type == 'cuda'))
 ```
+
+`fused=True` on CUDA runs the entire optimizer step as a single kernel instead of separate kernel launches per parameter — a small free speedup.
 
 AdamW decouples weight decay from the gradient update (unlike Adam where weight decay is entangled with the adaptive learning rate). `beta2=0.95` (instead of the default 0.999) makes the second moment estimate more responsive, which helps with the non-stationary gradients typical in language model training.
 
