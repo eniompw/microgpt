@@ -16,6 +16,7 @@ A detailed breakdown of every design decision in `microgpt_fast.ipynb` / `microg
   - [Phase 4: Training recipe improvements](#phase-4-training-recipe-improvements)
   - [Phase 5: Model size increase](#phase-5-model-size-increase-the-breakthrough)
   - [Phase 6: Final tuning](#phase-6-final-tuning)
+  - [Phase 7: Inference vectorization](#phase-7-inference-vectorization)
   - [Key takeaways](#key-takeaways)
 - [Architecture](#architecture) — what each component does and why it was chosen
 - [Training](#training) — mixed precision, torch.compile, LR schedule, optimizer
@@ -136,12 +137,41 @@ Between Phase 3 and 4, the notebook was renamed for clarity: `microgpt-colab.ipy
 
 > Once upon a time, there was a little boy named Tim. Tim had a magic cabin every day. He loved to play with his toy cars, even if he would go fast and play all day...
 
+### Phase 7: Inference vectorization
+
+**Problem:** After training was solid, inference was noticeably slow. Generating 5 samples of 200 tokens each took several seconds — disproportionate to how fast the trained model should be.
+
+**Diagnosis:** The KV-cache attention loop was the bottleneck. For each new token, the code ran a Python `for h in range(n_head):` loop, stacking and computing attention per head one at a time:
+
+```python
+x_attn = []
+for h in range(n_head):
+    k_h = torch.stack([ki[h] for ki in keys[li]])
+    v_h = torch.stack([vi[h] for vi in values[li]])
+    x_attn.append(F.softmax(k_h @ q[h] / head_dim**0.5, dim=0) @ v_h)
+x = F.linear(torch.cat(x_attn), attn_wo) + r
+```
+
+With 8 heads and 6 layers, this meant 48 Python loop iterations and 48 separate `torch.stack` calls per token — Python overhead dominated.
+
+**Fix:** Replaced the loop with two `einsum` calls that compute all heads simultaneously:
+
+```python
+K = torch.stack(keys[li])    # (S, H, D)
+V = torch.stack(values[li])  # (S, H, D)
+attn = F.softmax(torch.einsum('hd,shd->sh', q, K) / head_dim**0.5, dim=0)
+x = F.linear(torch.einsum('sh,shd->hd', attn, V).reshape(-1), attn_wo) + r
+```
+
+**Result:** Inference significantly faster. The Python loop was the bottleneck — eliminating it lets the GPU handle all heads in a single kernel call.
+
 ### Key takeaways
 
 - **Phase 2 (architecture overhaul) was the foundation** — batched training unlocked everything else.
 - **Phase 4 (training recipe) was free** — same model, same compute, loss dropped 0.99 → 0.81.
 - **Phase 5 (model size) was the breakthrough** — capacity ceiling at 0.81 could only be broken by a bigger model. Width (128→256) mattered more than depth.
 - **Phase 6 (min_lr + more steps) was the final squeeze** — the cosine schedule was decaying LR to zero, wasting the last third of training.
+- **Phase 7 (inference vectorization) was free** — same results, just eliminated a Python loop that was bottlenecking the GPU.
 - **Temperature at inference** (0.8→0.7) was the cheapest improvement — zero retraining, just pick higher-confidence tokens.
 
 ---
