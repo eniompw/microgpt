@@ -1,70 +1,34 @@
-import os
-import random
-import json
+import os, random, json, math, time
 import torch
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
-# Reproducibility
-random.seed(42)
-torch.manual_seed(42)
-
-# Device setup — will use T4 GPU on Colab
+random.seed(42); torch.manual_seed(42)  # reproducibility
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
-if device.type == 'cuda':
-    print(f"GPU: {torch.cuda.get_device_name(0)}")
-    print(f"Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
-
-# ── Dataset Download and Preparation ─────────────────────────────────────────
-import urllib.request
+print(f"device: {device}" + (f" | {torch.cuda.get_device_name(0)}" if device.type == 'cuda' else ''))
 
 if not os.path.exists('input.txt'):
-    print("Downloading TinyStories dataset from HuggingFace...")
-    stories = []
-    base_url = 'https://datasets-server.huggingface.co/rows?dataset=karpathy/tinystories-gpt4-clean&config=default&split=train'
-    for offset in range(20000, 25000, 100):  # 5000 stories
-        url = f'{base_url}&offset={offset}&limit=100'
-        with urllib.request.urlopen(url) as response:
-            data = json.loads(response.read())
-        for item in data['rows']:
-            stories.append(item['row']['text'])
-        print(f"  fetched {len(stories)} stories...", end='\r')
-    print()
+    import warnings, pandas as pd
+    warnings.filterwarnings('ignore', category=UserWarning, module='huggingface_hub')
+    df = pd.read_parquet("hf://datasets/karpathy/tinystories-gpt4-clean/tinystories_gpt4_clean.parquet")
     with open('input.txt', 'w') as f:
-        for story in stories:
-            f.write(json.dumps(story) + '\n')
-    print("Saved to input.txt")
-else:
-    print("input.txt already exists, skipping download.")
+        for s in df['text'].iloc[20000:25000]:  # 5000 stories
+            f.write(json.dumps(s) + '\n')
 
-docs = [json.loads(line) for line in open('input.txt') if line.strip()]
+docs = [json.loads(l) for l in open('input.txt') if l.strip()]
 random.shuffle(docs)
-print(f"num docs: {len(docs)}")
-print(f"sample doc: {docs[0][:120]}...")
 
-# ── Tokenizer Setup ───────────────────────────────────────────────────────────
-# Character-level vocabulary — all 74 chars present in the dataset
+# Character-level vocab — 74 printable ASCII chars + BOS (beginning-of-story) token
 uchars = sorted('\n !"$\',-.' + '0123456789:;?' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' + 'abcdefghijklmnopqrstuvwxyz')
-BOS = len(uchars)          # special Beginning-of-Sequence token id
-vocab_size = len(uchars) + 1
-print(f"vocab size: {vocab_size}")
-print(f"BOS token id: {BOS}")
+BOS = len(uchars); vocab_size = BOS + 1
 
 # Encode / decode helpers
-stoi = {ch: i for i, ch in enumerate(uchars)}
-encode = lambda s: [stoi[ch] for ch in s]
+stoi = {c: i for i, c in enumerate(uchars)}
+encode = lambda s: [stoi[c] for c in s]
 decode = lambda ids: ''.join(uchars[i] for i in ids)
+print(f"docs: {len(docs)}, vocab: {vocab_size}, sample: {docs[0][:80]}...")
 
-# Sanity check
-sample_text = "Once upon a time"
-encoded = encode(sample_text)
-decoded = decode(encoded)
-print(f"encode('{sample_text}') → {encoded}")
-print(f"decode(...)           → '{decoded}'")
-
-# ── Hyperparameters ───────────────────────────────────────────────────────────
-import math
-
+# ── Hyperparameters ──────────────────────────────────────────────────────────
 n_layer    = 6       # transformer depth
 n_embd     = 256     # embedding dim
 block_size = 256     # context window
@@ -72,174 +36,135 @@ n_head     = 8       # attention heads
 head_dim   = n_embd // n_head
 batch_size = 64      # sequences per gradient step
 
-# ── Weight init ──────────────────────────────────────────────────────────────
-matrix = lambda nout, nin: torch.randn(nout, nin, device=device) * 0.02
-
-state_dict = {
-    'wte': matrix(vocab_size, n_embd),   # token embeddings (weight-tied to lm_head)
-}
+# Weight init — scale down randn; .requires_grad_(True) on result makes it an optimisable leaf tensor
+W = lambda r, c: (torch.randn(r, c, device=device) * 0.02).requires_grad_(True)
+sd = {'wte': W(vocab_size, n_embd)}  # token embeddings — reused as lm_head (weight tying)
 for i in range(n_layer):
-    state_dict[f'layer{i}.attn_wq'] = matrix(n_embd, n_embd)
-    state_dict[f'layer{i}.attn_wk'] = matrix(n_embd, n_embd)
-    state_dict[f'layer{i}.attn_wv'] = matrix(n_embd, n_embd)
-    state_dict[f'layer{i}.attn_wo'] = matrix(n_embd, n_embd)
-    state_dict[f'layer{i}.mlp_fc1'] = matrix(4 * n_embd, n_embd)
-    state_dict[f'layer{i}.mlp_fc2'] = matrix(n_embd, 4 * n_embd)
+    sd |= {f'l{i}.wq': W(n_embd, n_embd), f'l{i}.wk': W(n_embd, n_embd),  # attention Q, K, V, O
+           f'l{i}.wv': W(n_embd, n_embd), f'l{i}.wo': W(n_embd, n_embd),
+           f'l{i}.fc1': W(4*n_embd, n_embd), f'l{i}.fc2': W(n_embd, 4*n_embd)}  # MLP
+params = list(sd.values())
+print(f"params: {sum(p.numel() for p in params):,}")
 
-params = list(state_dict.values())
-for p in params:
-    p.requires_grad_(True)
-
-total_params = sum(p.numel() for p in params)
-print(f"num params: {total_params:,}")
-print(f"tokens per iter: {batch_size * block_size:,}")
-
-# ── Model Architecture ────────────────────────────────────────────────────────
 def rmsnorm(x):
-    """RMSNorm along last dim — works for any shape."""
-    return x * (x.pow(2).mean(-1, keepdim=True) + 1e-5).rsqrt()
+    return x * (x.pow(2).mean(-1, keepdim=True) + 1e-5).rsqrt()  # normalise without mean subtraction
 
-# ── RoPE (Rotary Position Embeddings) ────────────────────────────────────────
-freqs = 1.0 / (10000.0 ** (torch.arange(0, head_dim, 2, device=device).float() / head_dim))
-freqs = torch.outer(torch.arange(block_size, device=device).float(), freqs)
-rope_cos, rope_sin = freqs.cos(), freqs.sin()   # (block_size, head_dim//2)
+# RoPE — precompute cos/sin rotation tables once; reused every forward pass
+t = torch.arange(block_size, device=device).float()
+f = 1.0 / (10000.0 ** (torch.arange(0, head_dim, 2, device=device).float() / head_dim))
+rope_cos, rope_sin = torch.outer(t, f).cos(), torch.outer(t, f).sin()  # (block_size, head_dim//2)
 
 def apply_rope(x, cos, sin):
-    """x: (B,T,H,D) or (H,D). cos/sin: (T,D//2) or (D//2,)"""
+    # Rotate pairs of dimensions to encode relative position into q/k vectors
     d = x.dtype
-    x = x.float().unflatten(-1, (-1, 2))
-    x_r, x_i = x[..., 0], x[..., 1]
-    if x.dim() == 5:  # batched
+    x = x.float().unflatten(-1, (-1, 2))  # split last dim into (head_dim//2, 2) pairs
+    x0, x1 = x[..., 0], x[..., 1]
+    if x.dim() == 5:  # batched (B,T,H,D) → reshape cos/sin to broadcast over B, H
         cos = cos.view(1, -1, 1, cos.shape[-1])
         sin = sin.view(1, -1, 1, sin.shape[-1])
-    return torch.stack([x_r*cos - x_i*sin, x_r*sin + x_i*cos], -1).flatten(-2).to(d)
+    return torch.stack([x0*cos - x1*sin, x0*sin + x1*cos], -1).flatten(-2).to(d)
 
 # ── Batched forward (for training) ───────────────────────────────────────────
 def gpt_train(tokens):
-    """tokens: (B, T) long -> logits: (B, T, vocab_size)"""
-    bsz, seqlen = tokens.shape
-    x = rmsnorm(F.embedding(tokens, state_dict['wte']))
-    cos, sin = rope_cos[:seqlen], rope_sin[:seqlen]
-    for li in range(n_layer):
-        r = x
-        x = rmsnorm(x)
-        q = F.linear(x, state_dict[f'layer{li}.attn_wq']).view(bsz, seqlen, n_head, head_dim)
-        k = F.linear(x, state_dict[f'layer{li}.attn_wk']).view(bsz, seqlen, n_head, head_dim)
-        v = F.linear(x, state_dict[f'layer{li}.attn_wv']).view(bsz, seqlen, n_head, head_dim)
+    """tokens: (B, T) long → logits (B, T, vocab_size)"""
+    B, T = tokens.shape
+    x = rmsnorm(F.embedding(tokens, sd['wte']))
+    cos, sin = rope_cos[:T], rope_sin[:T]
+    for i in range(n_layer):
+        r = x; x = rmsnorm(x)
+        q = F.linear(x, sd[f'l{i}.wq']).view(B, T, n_head, head_dim)
+        k = F.linear(x, sd[f'l{i}.wk']).view(B, T, n_head, head_dim)
+        v = F.linear(x, sd[f'l{i}.wv']).view(B, T, n_head, head_dim)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
-        x = F.scaled_dot_product_attention(
+        x = F.scaled_dot_product_attention(             # flash attention — fused CUDA kernel
             q.transpose(1,2), k.transpose(1,2), v.transpose(1,2), is_causal=True
-        ).transpose(1,2).contiguous().view(bsz, seqlen, -1)
-        x = F.linear(x, state_dict[f'layer{li}.attn_wo']) + r
-        r = x
-        x = rmsnorm(x)
-        x = F.silu(F.linear(x, state_dict[f'layer{li}.mlp_fc1']))
-        x = F.linear(x, state_dict[f'layer{li}.mlp_fc2']) + r
-    return F.linear(rmsnorm(x), state_dict['wte'])   # weight-tied lm_head
+        ).transpose(1,2).reshape(B, T, -1)
+        x = F.linear(x, sd[f'l{i}.wo']) + r            # output projection + residual
+        r = x; x = rmsnorm(x)
+        x = F.silu(F.linear(x, sd[f'l{i}.fc1']))       # SiLU activation (smoother than ReLU)
+        x = F.linear(x, sd[f'l{i}.fc2']) + r
+    return F.linear(rmsnorm(x), sd['wte'])              # weight-tied lm_head
 
-gpt_train = torch.compile(gpt_train)  # fuse GPU kernels for ~2x speedup
+gpt_train = torch.compile(gpt_train)  # fuse GPU kernels for ~2× speedup
 print(f"torch.compile cache: {os.getenv('TORCHINDUCTOR_CACHE_DIR', '~/.cache/torch/inductor')}")
 
 # ── Single-token forward (for inference with KV cache) ───────────────────────
 def gpt(token_id, pos_id, keys, values):
-    x = rmsnorm(state_dict['wte'][token_id])
+    x = rmsnorm(sd['wte'][token_id])
     cos, sin = rope_cos[pos_id], rope_sin[pos_id]
-    for li in range(n_layer):
-        r = x
-        x = rmsnorm(x)
-        q = F.linear(x, state_dict[f'layer{li}.attn_wq']).view(n_head, head_dim)
-        k = F.linear(x, state_dict[f'layer{li}.attn_wk']).view(n_head, head_dim)
-        v = F.linear(x, state_dict[f'layer{li}.attn_wv']).view(n_head, head_dim)
+    for i in range(n_layer):
+        r = x; x = rmsnorm(x)
+        q = F.linear(x, sd[f'l{i}.wq']).view(n_head, head_dim)
+        k = F.linear(x, sd[f'l{i}.wk']).view(n_head, head_dim)
+        v = F.linear(x, sd[f'l{i}.wv']).view(n_head, head_dim)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
-        keys[li].append(k)
-        values[li].append(v)
-        K = torch.stack(keys[li])    # (S, H, D)
-        V = torch.stack(values[li])  # (S, H, D)
+        keys[i].append(k)
+        values[i].append(v)
+        K = torch.stack(keys[i])    # (S, H, D)
+        V = torch.stack(values[i])  # (S, H, D)
         attn = F.softmax(torch.einsum('hd,shd->sh', q, K) / head_dim**0.5, dim=0)
         x = F.linear(torch.einsum('sh,shd->hd', attn, V).reshape(-1),
-                      state_dict[f'layer{li}.attn_wo']) + r
-        r = x
-        x = rmsnorm(x)
-        x = F.silu(F.linear(x, state_dict[f'layer{li}.mlp_fc1']))
-        x = F.linear(x, state_dict[f'layer{li}.mlp_fc2']) + r
-    return F.linear(rmsnorm(x), state_dict['wte'])
+                      sd[f'l{i}.wo']) + r
+        r = x; x = rmsnorm(x)
+        x = F.silu(F.linear(x, sd[f'l{i}.fc1']))
+        x = F.linear(x, sd[f'l{i}.fc2']) + r
+    return F.linear(rmsnorm(x), sd['wte'])
 
-print("Model functions defined.")
-
-# ── Training Loop ─────────────────────────────────────────────────────────────
-import time
-import matplotlib.pyplot as plt
-
-# ── Prepare token stream ─────────────────────────────────────────────────────
-all_tokens = [BOS]
-for doc in docs:
-    all_tokens.extend(encode(doc) + [BOS])
-all_tokens = torch.tensor(all_tokens, dtype=torch.long, device=device)
-print(f"Total tokens: {len(all_tokens):,}")
+# Flatten all stories into a single token stream with BOS markers as story boundaries
+all_tokens = torch.tensor(
+    [tok for doc in docs for tok in [BOS] + encode(doc)] + [BOS],
+    dtype=torch.long, device=device
+)
 
 def get_batch():
-    starts = torch.randint(0, len(all_tokens) - block_size - 1, (batch_size,), device=device)
-    idx = starts.unsqueeze(1) + torch.arange(block_size + 1, device=device)
+    # Sample batch_size random windows of block_size tokens from the stream
+    s = torch.randint(0, len(all_tokens) - block_size - 1, (batch_size,), device=device)
+    idx = s.unsqueeze(1) + torch.arange(block_size + 1, device=device)
     tokens = all_tokens[idx]
-    return tokens[:, :-1], tokens[:, 1:]
+    return tokens[:, :-1], tokens[:, 1:]  # inputs, targets (shifted by 1 for next-token prediction)
 
 # ── Optimizer: AdamW ─────────────────────────────────────────────────────────
-num_steps     = 3500
-warmup_steps  = 200
-learning_rate = 1e-3
-min_lr        = 1e-4   # 10% of peak — prevents wasted steps at tail
+num_steps  = 3500   # total training steps
+warmup     = 200    # steps to linearly ramp LR up from 0 (stabilises early training)
+lr         = 1e-3   # peak learning rate
+min_lr     = 1e-4   # 10% of peak — prevents wasted steps at tail
 
 def get_lr(step):
-    if step < warmup_steps:
-        return learning_rate * step / warmup_steps
-    progress = (step - warmup_steps) / (num_steps - warmup_steps)
-    return min_lr + (learning_rate - min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
+    # Linear warmup then cosine decay to min_lr floor
+    if step < warmup:
+        return lr * step / warmup
+    p = (step - warmup) / (num_steps - warmup)
+    return min_lr + (lr - min_lr) * 0.5 * (1 + math.cos(math.pi * p))
 
-optimizer = torch.optim.AdamW(params, lr=learning_rate, betas=(0.9, 0.95), eps=1e-10,
-                              fused=(device.type == 'cuda'))
-
-# Mixed precision (float16 on T4)
-scaler = torch.amp.GradScaler('cuda')
-
-# ── Training loop ────────────────────────────────────────────────────────────
-loss_history = []
-t0 = time.time()
+opt = torch.optim.AdamW(params, lr=lr, betas=(0.9, 0.95), eps=1e-10, fused=(device.type == 'cuda'))
+scaler = torch.amp.GradScaler('cuda')  # scales loss to prevent float16 gradient underflow
+losses, t0 = [], time.time()
 
 for step in range(num_steps + 1):
-    lr_t = get_lr(step)
-    for g in optimizer.param_groups:
-        g['lr'] = lr_t
-
+    opt.param_groups[0]['lr'] = get_lr(step)  # update LR each step
     if step % 100 == 0:
         xb, yb = get_batch()
         with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.float16):
-            el = F.cross_entropy(gpt_train(xb).reshape(-1, vocab_size), yb.reshape(-1)).item()
-        print(f"step {step:4d}/{num_steps} | loss {el:.4f} | lr {lr_t:.2e} | {time.time()-t0:.1f}s")
-
-    if step >= num_steps:
-        break
-
-    optimizer.zero_grad(set_to_none=True)
+            loss_val = F.cross_entropy(gpt_train(xb).reshape(-1, vocab_size), yb.reshape(-1)).item()
+        print(f"step {step:4d}/{num_steps} | loss {loss_val:.4f} | lr {get_lr(step):.2e} | {time.time()-t0:.1f}s")
+    if step >= num_steps: break
+    opt.zero_grad(set_to_none=True)
     xb, yb = get_batch()
     with torch.amp.autocast('cuda', dtype=torch.float16):
         loss = F.cross_entropy(gpt_train(xb).reshape(-1, vocab_size), yb.reshape(-1))
     scaler.scale(loss).backward()
-    scaler.unscale_(optimizer)
-    torch.nn.utils.clip_grad_norm_(params, 1.0)
-    scaler.step(optimizer)
-    scaler.update()
-    loss_history.append(loss.item())
+    scaler.unscale_(opt)
+    torch.nn.utils.clip_grad_norm_(params, 1.0)  # prevent loss spikes from large gradients
+    scaler.step(opt); scaler.update()
+    losses.append(loss.item())
 
 print(f"\nDone in {time.time()-t0:.1f}s")
 plt.figure(figsize=(8, 3))
-plt.plot(loss_history)
-plt.xlabel('Step'); plt.ylabel('Loss'); plt.title('Training Loss')
-plt.tight_layout(); plt.show()
+plt.plot(losses); plt.xlabel('Step'); plt.ylabel('Loss'); plt.tight_layout(); plt.show()
 
-# ── Inference ─────────────────────────────────────────────────────────────────
-temperature = 0.7   # (0, 1] — lower = more focused, higher = more random
-num_samples = 5
-max_new_tokens = 200  # generate up to this many tokens per sample
+num_samples    = 5    # number of stories to generate
+max_new_tokens = 200  # max tokens per story (stops early if BOS token is predicted)
+temperature    = 0.7  # lower = more focused, higher = more random
 
 def generate_sample(max_new_tokens=200, temperature=0.7):
     keys = [[] for _ in range(n_layer)]
@@ -256,8 +181,7 @@ def generate_sample(max_new_tokens=200, temperature=0.7):
             sample.append(uchars[token_id])
     return ''.join(sample)
 
-print("--- inference (hallucinated stories) ---\n")
 t0 = time.time()
-for sample_idx in range(num_samples):
-    print(f"sample {sample_idx+1}:\n{generate_sample(max_new_tokens, temperature)}\n")
+for i in range(num_samples):
+    print(f"--- sample {i+1} ---\n{generate_sample(max_new_tokens, temperature)}\n")
 print(f"Done in {time.time()-t0:.1f}s")
