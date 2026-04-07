@@ -147,6 +147,19 @@ f = 1.0 / (10000.0 ** (torch.arange(0, head_dim, 2, device=device).float() / hea
 rope_cos, rope_sin = torch.outer(t, f).cos(), torch.outer(t, f).sin()
 ```
 
+**Single param group update.** `microgpt_fast` iterates all param groups when setting the learning rate each step:
+
+```python
+for g in optimizer.param_groups:
+    g['lr'] = lr_t
+```
+
+There is only ever one param group here, so `microgpt_lite` writes it directly:
+
+```python
+opt.param_groups[0]['lr'] = get_lr(step)
+```
+
 ---
 
 ## What stays
