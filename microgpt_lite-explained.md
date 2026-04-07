@@ -153,7 +153,7 @@ rope_cos, rope_sin = torch.outer(t, f).cos(), torch.outer(t, f).sin()
 
 These are kept because they provide the bulk of the training speedup and are not complex to read:
 
-**`torch.compile`** — one line applied to `forward` after definition. Fuses GPU kernels for ~2× speedup during training. The compiled function is called identically to the uncompiled version.
+**`torch.compile`** — one line applied to `forward` after definition. Fuses GPU kernels for ~2× speedup during training. The compiled function is called identically to the uncompiled version. You may see `Not enough SMs to use max_autotune_gemm mode` logged — this is informational only; the T4's 40 SMs fall below the threshold for exhaustive kernel search, but compilation still runs and fuses kernels normally.
 
 **Flash attention** — `F.scaled_dot_product_attention(..., is_causal=True)`. One function call replaces an explicit attention matrix computation. No extra code required.
 

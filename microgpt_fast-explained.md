@@ -272,6 +272,8 @@ Traces the forward function and fuses operations into optimised CUDA kernels (e.
 
 **What the compiler needs to optimise well:** The loop structure inside the compiled function must be statically traceable. `for li in range(n_layer):` with a module-level constant lets the compiler fully unroll and specialise the loop. Replacing this with `for layer in layers:` — iterating a Python list of dicts — breaks static tracing, causing ~40s of JIT warmup at step 0 (vs ~3s normally) and measurably slower per-step execution.
 
+**`max_autotune_gemm` warning:** You may see `Not enough SMs to use max_autotune_gemm mode` logged by TorchInductor. This is informational, not an error. That mode exhaustively benchmarks many matrix multiplication kernel configurations to find the fastest one — it requires a GPU with enough Streaming Multiprocessors (SMs) to make the search worthwhile. The T4 has 40 SMs, which is below that threshold. `torch.compile` still runs and fuses kernels; it just uses a less exhaustive tuning strategy.
+
 **Cold vs warm compile:** The first run on a fresh Colab session compiles kernels and caches them in `/tmp/torchinductor_root`. The step 0 timestamp is the clearest indicator:
 
 | Step 0 time | Meaning |
