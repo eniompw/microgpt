@@ -8,12 +8,12 @@ Based on [microgpt.py](https://gist.githubusercontent.com/karpathy/8627fe009c40f
 
 ## Learning path
 
-| Step | File | What you learn |
-|---|---|---|
-| 1 | `microgpt.py` | How a GPT works from scratch — autograd, attention, training loop, inference — with zero dependencies |
-| 2 | `microgpt_torch.py` | How the same model maps to PyTorch (`nn.Module`, tensors, autograd) |
-| 3 | `microgpt_fast.ipynb` / `.py` | How to make it actually work — batched training, GPU acceleration, modern transformer techniques |
-| 4 | `microgpt_lite.ipynb` | How to strip back complexity while keeping the key speed wins |
+| Step | File | Lines | What you learn |
+|---|---|---|---|
+| 1 | `microgpt.py` | 199 | How a GPT works from scratch — autograd, attention, training loop, inference — with zero dependencies |
+| 2 | `microgpt_torch.py` | 169 | How the same model maps to PyTorch (`nn.Module`, tensors, autograd) |
+| 3 | `microgpt_fast.ipynb` / `.py` | 263 | How to make it actually work — batched training, GPU acceleration, modern transformer techniques |
+| 4 | `microgpt_lite.ipynb` / `.py` | 161 | How to strip back complexity while keeping the key speed wins |
 
 ---
 
